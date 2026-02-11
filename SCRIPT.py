@@ -1,99 +1,110 @@
-
-
-
-
 import requests
 import os
 import subprocess
 import shutil
+import threading
+import sys
+from concurrent.futures import ThreadPoolExecutor
 
 # --- CONFIGURATION ---
-BASE_URL = "http://172.22.215.130:8080"
-DOSSIER_CIBLE = "premiere_sequence"
-
-# Liste des pays
+BASE_URL = "http://172.22.215.130:8080" #
+DOSSIER_RACINE = "donnees_sequences"
 PAYS = ["PT","CH","DE","GB","CZ","FR","DK","LV","RU","HR",
         "SI","GR","IT","RO","LT","SE","ES","BE","NO","FI",
         "PL","NL","BY","LU","UA","AL","IE","AT","EE","RS",
         "HU","ME","BG","SK","MD","IS"]
 
-# Création du dossier s'il n'existe pas
-if not os.path.exists(DOSSIER_CIBLE):
-    os.makedirs(DOSSIER_CIBLE)
+# --- 1. TEST DE CONNEXION (OBLIGATOIRE) ---
+print("[TEST] TEST DE CONNEXION AU SERVEUR...")
+try:
+    # On tente de contacter la racine de l'API
+    test = requests.get(BASE_URL, timeout=5)
+    print(f"[OK] Serveur joignable ! (Statut: {test.status_code})")
+except Exception as e:
+    print(f"[ERREUR] ERREUR FATALE : Impossible de joindre {BASE_URL}")
+    print(f"   Detail : {e}")
+    print("-> Verifiez que vous etes bien sur le reseau de l'universite.")
+    sys.exit(1)
 
-# --- FONCTION : SYNCHRONISATION ET SUPPRESSION ---
-def synchroniser_et_nettoyer(code_pays):
-    print(f" [GIT] Synchronisation pour le pays : {code_pays}...")
-    try:
-        # 1. Ajouter tout
-        subprocess.run(["git", "add", "."], check=True)
-        
-        # 2. Commit
-        subprocess.run(["git", "commit", "-m", f"Ajout data : {code_pays}"], check=True)
-        
-        # 3. Push
-        resultat_push = subprocess.run(["git", "push", "origin", "main"], check=True)
-        
-        # 4. Suppression locale (Uniquement si le push est OK)
-        if resultat_push.returncode == 0:
-            print(f" [CLEAN] Suppression fichiers locaux pour {code_pays}...")
-            for fichier in os.listdir(DOSSIER_CIBLE):
-                chemin_fichier = os.path.join(DOSSIER_CIBLE, fichier)
-                if os.path.isfile(chemin_fichier):
-                    os.remove(chemin_fichier)
-                    
-    except subprocess.CalledProcessError as e:
-        print(f" [ERREUR] Problème avec Git : {e}")
+# Creation du dossier racine
+if not os.path.exists(DOSSIER_RACINE):
+    os.makedirs(DOSSIER_RACINE)
 
-# --- MOTEUR PRINCIPAL ---
-print("--- DÉMARRAGE DU PIPELINE (LOGIQUE INFINIE) ---")
+# Verrou pour Git
+verrou_git = threading.Lock()
 
-for pays in PAYS:
-    print(f">> Traitement du pays : {pays}")
-    fichiers_telecharges = 0
+def synchroniser_et_nettoyer(code_pays, dossier_pays):
+    with verrou_git:
+        print(f"[GIT] Envoi securise pour {code_pays}...")
+        try:
+            subprocess.run(["git", "add", dossier_pays], check=True)
+            subprocess.run(["git", "commit", "-m", f"Data: {code_pays}"], check=False)
+            subprocess.run(["git", "push", "origin", "main"], check=True)
+            
+            print(f"[CLEAN] Suppression du dossier {code_pays}...")
+            shutil.rmtree(dossier_pays)
+        except Exception as e:
+            print(f"[ERREUR] Erreur Git pour {code_pays}: {e}")
+
+def traiter_pays(code_pays):
+    dossier_pays = os.path.join(DOSSIER_RACINE, code_pays)
+    if not os.path.exists(dossier_pays):
+        os.makedirs(dossier_pays)
+        
+    print(f"[START] Thread lance pour {code_pays}...")
+    fichiers_trouves = 0
+    annee = 1978 # Date de depart
     
-    # DÉBUT LOGIQUE PURE : On commence en 1987
-    annee = 1987
-    
-    # On boucle à l'infini, seul le serveur peut nous arrêter
+    # Boucle infinie
     while True:
-        arret_pays = False
+        stop_pays = False
         
         for q in ["Q1", "Q2", "Q3", "Q4"]:
             trimestre = f"{annee}{q}"
-            
-            url = f"{BASE_URL}/archived/sequences/{pays}/{trimestre}"
-            nom_fichier = f"{pays}_{trimestre}.fasta"
-            chemin_sauvegarde = os.path.join(DOSSIER_CIBLE, nom_fichier)
+            url = f"{BASE_URL}/archived/sequences/{code_pays}/{trimestre}"
+            nom_fichier = f"{code_pays}_{trimestre}.fasta"
+            chemin_final = os.path.join(dossier_pays, nom_fichier)
             
             try:
-                # Requête GET
-                reponse = requests.get(url, timeout=5)
+                # Timeout reduit
+                reponse = requests.get(url, timeout=2)
                 
-                # LA SEULE CONDITION D'ARRÊT : "Too early"
+                # Check 1 : Futur atteint ?
                 if "Too early" in reponse.text:
-                    print(f"   [STOP] Futur atteint pour {pays} à {trimestre}")
-                    arret_pays = True
+                    stop_pays = True
                     break
                 
-                # Si succès (Code 200)
+                # Check 2 : Succes ?
                 if reponse.status_code == 200:
-                    with open(chemin_sauvegarde, "wb") as f:
+                    with open(chemin_final, "wb") as f:
                         f.write(reponse.content)
-                    fichiers_telecharges += 1
-                    
-            except Exception:
-                pass # On ignore les erreurs techniques
+                    print(f"   [OK] [{code_pays}] Trouve : {trimestre}")
+                    fichiers_trouves += 1
+                
+                # Check 3 : Erreur autre que 404
+                elif reponse.status_code != 404:
+                    print(f"   [INFO] [{code_pays}] Erreur HTTP {reponse.status_code} sur {trimestre}")
+
+            except Exception as e:
+                # Si erreur de connexion
+                print(f"   [ERREUR] [{code_pays}] Connexion echouee sur {trimestre} : {e}")
         
-        # Si on a touché le futur, on sort de la boucle "while" pour changer de pays
-        if arret_pays:
+        if stop_pays:
             break
         
-        # Sinon, on passe à l'année suivante
         annee += 1
-            
-    # Fin du pays : on push et on vide le disque
-    if fichiers_telecharges > 0:
-        synchroniser_et_nettoyer(pays)
+    
+    if fichiers_trouves > 0:
+        synchroniser_et_nettoyer(code_pays, dossier_pays)
+    else:
+        print(f"[INFO] [{code_pays}] Aucune donnee trouvee. Dossier nettoye.")
+        try:
+            os.rmdir(dossier_pays)
+        except:
+            pass
 
-print("--- TERMINÉ : TOUT EST SUR GITHUB ---")
+# --- LANCEMENT ---
+print(f"--- DEMARRAGE MASSIF ({len(PAYS)} PAYS) ---")
+with ThreadPoolExecutor(max_workers=len(PAYS)) as executor:
+    executor.map(traiter_pays, PAYS)
+print("--- TERMINE ---")
