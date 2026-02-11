@@ -13,25 +13,25 @@ PAYS = ["PT","CH","DE","GB","CZ","FR","DK","LV","RU","HR",
         "PL","NL","BY","LU","UA","AL","IE","AT","EE","RS",
         "HU","ME","BG","SK","MD","IS"]
 
-# --- 1. CONFIGURATION GIT (Cache mot de passe) ---
-print("[SETUP] Configuration du cache Git...")
+# --- SETUP GIT ---
+print("[SETUP] Configuration du cache mot de passe Git (1 heure)...")
 subprocess.run(["git", "config", "credential.helper", "cache --timeout=3600"])
 
 if not os.path.exists(DOSSIER_RACINE):
     os.makedirs(DOSSIER_RACINE)
 
-def traiter_et_nettoyer_un_pays(code_pays):
+def traiter_pays(code_pays):
     dossier_pays = os.path.join(DOSSIER_RACINE, code_pays)
     
-    # Nettoyage préventif au cas où
+    # On s'assure que le dossier est vide au depart
     if os.path.exists(dossier_pays):
         shutil.rmtree(dossier_pays)
     os.makedirs(dossier_pays)
         
-    print(f"\n\uD83D\uDE80 [START] Traitement de {code_pays} (Mode Séquentiel)...")
+    print(f"\n[START] Traitement de {code_pays} (Mode Sequentiel)...")
     fichiers_trouves = 0
     
-    # SCAN 1978 -> 2028
+    # SCAN DE 1978 A 2029
     for annee in range(1978, 2029):
         stop_pays = False
         
@@ -42,35 +42,34 @@ def traiter_et_nettoyer_un_pays(code_pays):
             chemin_final = os.path.join(dossier_pays, nom_fichier)
             
             try:
-                # Requete
                 reponse = requests.get(url, timeout=2)
                 
-                # Arret si futur ou 404
+                # Verification d'arret (Futur ou 404 apres 2022)
                 if "Too early" in reponse.text or reponse.status_code == 404:
                     if annee > 2022:
                         stop_pays = True
                         break
                 
-                # Succès
+                # Succes (200 OK)
                 if reponse.status_code == 200:
                     with open(chemin_final, "wb") as f:
                         f.write(reponse.content)
-                    print(f"   \uD83D\uDCC4 [OK] {code_pays} {trimestre}")
+                    print(f"   [OK] {code_pays} {trimestre}")
                     fichiers_trouves += 1
             
             except Exception as e:
-                # Si le disque est plein, on arrête TOUT immédiatement
+                # Si erreur de quota disque, on arrete tout
                 if "Disk quota exceeded" in str(e):
-                    print("❌ ❌ ❌ DISQUE PLEIN ! ARRET D'URGENCE.")
+                    print("[FATAL] DISQUE PLEIN ! ARRET D'URGENCE.")
                     sys.exit(1)
                 pass
         
         if stop_pays:
             break
 
-    # FIN DU SCAN POUR CE PAYS -> ON ENVOIE ET ON VIDE
+    # FIN DU PAYS : ENVOI ET NETTOYAGE
     if fichiers_trouves > 0:
-        print(f"\uD83D\uDD12 [GIT] Envoi de {code_pays} sur GitHub...")
+        print(f"[GIT] Envoi de {code_pays} sur GitHub...")
         try:
             subprocess.run(["git", "add", dossier_pays], check=True)
             subprocess.run(["git", "commit", "-m", f"Data: {code_pays}"], check=False)
@@ -78,20 +77,23 @@ def traiter_et_nettoyer_un_pays(code_pays):
             push = subprocess.run(["git", "push", "origin", "main"], check=True)
             
             if push.returncode == 0:
-                print(f"\uD83D\uDD25 [DELETE] Suppression locale de {code_pays}...")
-                shutil.rmtree(dossier_pays) # ON SUPPRIME POUR FAIRE DE LA PLACE
-                print(f"✨ Espace libéré. Prêt pour le suivant.")
+                print(f"[DELETE] Suppression locale de {code_pays}...")
+                shutil.rmtree(dossier_pays) # Suppression immediate
+                print(f"[CLEAN] Espace libere. Pret pour le suivant.")
+            else:
+                print("[ERREUR] Le push a echoue, fichiers conserves.")
                 
         except Exception as e:
-            print(f"❌ ERREUR GIT : {e}")
+            print(f"[ERREUR GIT] : {e}")
     else:
-        print(f"⚠️ [VIDE] Rien trouvé pour {code_pays}. Nettoyage.")
+        print(f"[VIDE] Rien trouve pour {code_pays}. Nettoyage.")
         shutil.rmtree(dossier_pays)
 
-# --- BOUCLE PRINCIPALE (UN PAR UN) ---
-print("--- DÉMARRAGE SÉQUENTIEL (Anti-Crash Disque) ---")
-for pays in PAYS:
-    traiter_et_nettoyer_un_pays(pays)
-    # On passe au suivant SEULEMENT quand le précédent est supprimé
+# --- LANCEMENT ---
+print("--- DEMARRAGE SEQUENTIEL ---")
 
-print("--- TERMINÉ ---")
+# On fait les pays UN PAR UN pour ne pas saturer le disque
+for pays in PAYS:
+    traiter_pays(pays)
+
+print("--- TERMINE ---")
